@@ -1,0 +1,124 @@
+---
+title: "Practical Machine Learning Project"
+author: "Chris Malec"
+date: "1/16/2019"
+output: html_document
+---
+There are many ways to approach a problem like this. I chose to get a reasonable answer as fast as possible.
+
+First I loaded the necessary libraries and read in the data from my working directory.
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(caret)
+library(plyr)
+library(mboost)
+
+df <- read.csv("pml-training.csv")
+```
+
+I took out the "classe" to use later.
+```
+classe <- df$classe
+```
+I then got rid of the time-dependent and non-numeric columns.  Most of the features were collected by windowing the raw time dependent data, and I felt that it was better to stick with those than mix the derived features in with the raw data since they would be highly correlated.  Similarly, information about users was thrown out, though that may be useful to look at as a possible innaccuracy in the model. I threw out the non-numeric values mostly because there weren't that many, and they made everything more complicated. NA values in the data were imputed by replacing them with the mean of the data in the column where the NA appears.
+
+```
+df <- df[,8:160]
+df <- select_if(df,is.numeric)
+df[is.na(df)] <- mean(df[,which(is.na(df),arr.ind=TRUE)[2]])
+```
+
+I wanted to combine models later, so I split the data into three fold: training, testing, and validation. They are equal in size because I am not great at R, and my computer is old.  If I made the training set larger, any algorithm that performed well also took hours.
+
+```
+set.seed(349)
+Folds <- createFolds(y = classe,k = 3)
+inTrain <- Folds[[1]]
+inTest <- Folds[[2]]
+inValid <- Folds[[3]]
+training <- df[inTrain,]
+testing <- df[inTest,]
+valid <- df[inValid,]
+```
+The data is then preprocessed by scaling, centering, and performing a principle component analysis.  The training, test, and validation sets are converted into their pca counterparts.  This treatment significantly reduced the number of variables, from 119 to 32.
+
+```
+pcaComp <- preProcess(training,method = c("center","scale","pca"),thresh = 0.9)
+training_pca <- predict(pcaComp,training)
+testing_pca <- predict(pcaComp,testing)
+valid_pca <- predict(pcaComp,valid)
+```
+Next, I was ready to start throwing algorithms at the data.  I tried several, the most successful of which were the tree based algorithms. I've listed the various models generated in order of how accurate they were on the training set, with random forest performing the best, and decision tree as implemented by rpart performing the worst.
+
+```
+#forest
+guess_forest <- train(y = classe[inTrain],x = training_pca,method = "rf")
+#bagged trees
+guess_bag <- train(y = classe[inTrain], x = training_pca,method = "treebag")
+#boosted trees
+guess_gbm <- train(y = classe[inTrain], x = training_pca,method = "gbm",verbose = FALSE)
+#boost
+guess_lda <- train(y = classe[inTrain], x = training,method = "lda")
+#trees
+guess_rpart <- train(y=classe[inTrain],x=training,method = "rpart")
+```
+I used the various models to maked predictions on the test set.
+
+```
+check_forest <- predict(guess_forest, testing_pca)
+check_bag <- predict(guess_bag,testing_pca)
+check_gbm <- predict(guess_gbm, testing_pca)
+check_lda <- predict(guess_lda, testing)
+check_rpart <- predict(guess_rpart, testing)
+```
+
+Finally, I combined the first three models and trained on the test set.  Including the last two gave significantly worse predictions, dropping accuracy by more than 10%.
+
+```
+all_the_things <- data.frame(forest=check_forest, bag=check_bag, gbm=check_gbm)
+guess_all <- train(y=classe[inTest],x=all_the_things,model = "rf")
+```
+I used the validation set to make predictions with this model, and produce a confusion matrix to quantify the results, it is reproduced below. The confusion matrix has greater than 89% sensitivity for all categories, and 98% specificity.  This means that a category is correctly rejected more efficiently than it is correctly accepted. To improve the algorithm, it may help to find a method that is more sensitive to combine into the current model. There are also some "error mode" categories that are poorly predicted compared to the correct execution category "A"."
+
+```
+valid_forest <- predict(guess_forest, valid_pca)
+valid_bag <- predict(guess_bag,valid_pca)
+valid_gbm <- predict(guess_gbm, valid_pca)
+all_the_things2 <- data.frame(forest=valid_forest,bag=valid_bag,gbm = valid_gbm)
+valid_all <- predict(guess_all,all_the_things2)
+confusionMatrix(as.factor(valid_all),classe[inValid])
+```
+```
+Confusion Matrix and Statistics
+
+          Reference
+Prediction    A    B    C    D    E
+         A 1769   50   11    8    2
+         B   38 1132   36    5   21
+         C   35   56 1053   65   18
+         D   12   13   22  981   12
+         E    6   15   19   13 1149
+
+Overall Statistics
+                                          
+               Accuracy : 0.9301          
+                 95% CI : (0.9237, 0.9362)
+    No Information Rate : 0.2844          
+    P-Value [Acc > NIR] : < 2.2e-16       
+                                          
+                  Kappa : 0.9117          
+ Mcnemar's Test P-Value : 8.752e-07       
+
+Statistics by Class:
+
+                     Class: A Class: B Class: C Class: D Class: E
+Sensitivity            0.9511   0.8942   0.9229   0.9151   0.9559
+Specificity            0.9848   0.9810   0.9678   0.9892   0.9901
+Pos Pred Value         0.9614   0.9188   0.8582   0.9433   0.9559
+Neg Pred Value         0.9806   0.9748   0.9834   0.9835   0.9901
+Prevalence             0.2844   0.1935   0.1744   0.1639   0.1838
+Detection Rate         0.2704   0.1731   0.1610   0.1500   0.1757
+Detection Prevalence   0.2813   0.1884   0.1876   0.1590   0.1838
+Balanced Accuracy      0.9680   0.9376   0.9453   0.9522   0.9730
+```
